@@ -1,0 +1,197 @@
+# Install Libraries
+install.packages("leaflet")
+install.packages("tidygeocoder")
+install.packages("htmlwidgets")
+library(readxl)
+library(dplyr)
+library(psych)
+library(tidyr)
+library(ggplot2)
+library(GGally)
+library(ggdendro)
+library(plotly)
+library(leaflet)
+library(tidygeocoder)
+library(tibble)
+library(stringr)
+library(htmlwidgets)
+# Containing Dataset
+dater <- read_excel("GreensboroRentalListings.xlsx")
+View(dater)
+str(dater)
+# Cleaning Dataset and Adding Columns and Changing Data Types
+results <- dater %>% reverse_geocode(lat = latitude, long = longitude) # Getting Address
+dater <- results %>% mutate(zipcode = str_extract(address, "(?<=North Carolina, )\\s*\\d{5}(?:-\\d{4})?(?=\\s*, United States)")) %>% select(names(dater), zipcode, everything())
+View(dater)
+dater <- dater %>% mutate(amenities = as.factor(amenities), fee = as.factor(fee), currency = as.factor(currency), price_type = as.factor(price_type), has_photo = as.factor(has_photo), zipcode = as.factor(zipcode))
+dater = dater[,1:19]
+dater$pets_allowed <- grepl("Cats|Dogs", dater$pets_allowed)
+dater$Appliances <- grepl("Dishwasher|Garbage Disposal|Washer Dryer|Refrigerator", dater$amenities)
+dater$Complex <- grepl("Gym|Pool|Basketball|Tennis|Parking|Clubhouse|Playground", dater$amenities)
+dater$Utilities <- grepl("Cable|Satellite|Internet Access", dater$amenities)
+dater$Amenities_TF <- grepl("Fireplace|Patio/Deck|Storage", dater$amenities)
+dater <- dater %>% mutate(Appliances = as.factor(Appliances), Complex = as.factor(Complex), Utilities = as.factor(Utilities), Amenities_TF = as.factor(Amenities_TF))
+View(dater)
+# Predictive Modeling
+Mod_2 <- lm(price ~  bedrooms + square_feet + longitude + latitude, data = dater)
+summary(Mod_2)
+Mod_3 <- lm(price ~ bedrooms + square_feet + longitude + latitude + amenities, data = dater)
+summary(Mod_3)
+Mod_4 <- lm(price ~ square_feet + amenities, data = dater)
+summary(Mod_4)
+Mod_5 <- lm(price ~ square_feet + amenities, data = dater)
+summary(Mod_5)
+Mod_6 <- lm(price ~ square_feet + pets_allowed + amenities + title, data = dater)
+summary(Mod_6)
+Mod_7 <- lm(price ~ bedrooms + square_feet + zipcode + pets_allowed + longitude + latitude + amenities, data = dater)
+summary(Mod_7)
+Mod_8 <- lm(price ~ bedrooms + square_feet + pets_allowed + longitude + latitude + zipcode + amenities, data = dater)
+summary(Mod_8) # Model I went with
+Mod_9 <- lm(price ~ bedrooms + square_feet + pets_allowed + longitude + latitude + zipcode + Appliances + Complex + Utilities + Amenities_TF, data = dater)
+summary(Mod_9) # Comaparing to Model 8
+# Cluster Analysis
+Rent <- dater[,c(5,6,11,14,15,16,17,18)]
+View(Rent)
+Rent_P <- Rent[,c(1,2,3,4)]
+View(Rent_P)
+ggpairs(Rent_P)
+Rent_P_Scaled <- scale(Rent_P) # Standarizing Data
+Rent_P_Scaled <- data.frame(Rent_P_Scaled)
+describe(Rent_P_Scaled)
+# Hierarchical Clustering Approach
+rc<-hclust(dist(Rent_P_Scaled), method = "ward.D2") # Used Ward Limatizing Method.
+ggdendrogram(rc, labels = FALSE) %>% ggplotly() # Dendrogram
+# Making Scree Plot
+wsshc <- numeric(10)
+
+for(k in 1:10) {
+  # Cut tree for k clusters
+  clusters <- cutree(rc, k=k)
+  # Calculate total WSS for this k
+  wsshc[k] <- sum(sapply(unique(clusters), function(i) {
+    cluster_points <- Rent_P_Scaled[clusters == i, , drop = FALSE]
+    if(nrow(cluster_points) > 0) {
+      dist(cluster_points)^2 %>% sum()/2  # Sum of squared distances divided by 2
+    } else {
+      0
+    }
+  }))
+}
+
+scree_data <- data.frame(
+  k = 1:length(wsshc),
+  wss = wsshc
+)
+
+scree_data$pct_var <- (max(wsshc) - scree_data$wss) / (max(wsshc) - min(wsshc)) * 100
+
+# Scree Plot
+ggplot(scree_data, aes(x = k, y = wss)) +
+  # Add points and lines
+  geom_point(size = 3) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  
+  # Add a second y-axis for percentage of variance
+  geom_line(aes(y = (pct_var/100) * (max(wss) - min(wss)) + min(wss)), 
+            color = "red", linetype = "dashed") +
+  scale_y_continuous(
+    name = "Within-cluster Sum of Squares",
+    sec.axis = sec_axis(~ (. - min(scree_data$wss))/(max(scree_data$wss) - min(scree_data$wss)) * 100,
+                        name = "Percentage of Variance Explained")
+  ) +
+  
+  # Customize the theme and labels
+  theme_minimal() +
+  labs(
+    title = "Scree Plot for Hierarchical Clustering",
+    subtitle = "WSS vs Number of Clusters",
+    x = "Number of Clusters (k)",
+    caption = "Red dashed line shows percentage of variance explained"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 9),
+    legend.position = "bottom"
+  )
+
+# Getting Stats of Clusters
+get_cluster_stats <- function(data, clusters) {
+  cluster_mem <- data %>%
+    mutate(cluster = clusters)
+  
+  cluster_stats <- cluster_mem %>%
+    group_by(as.factor(cluster)) %>%
+    summarise(
+      n_points = n(),
+      
+      mean_price = mean(price, na.rm = TRUE),
+      sd_price = sd(price, na.rm = TRUE),
+      mean_bedrooms = mean(bedrooms, na.rm = TRUE),
+      sd_bedrooms = sd(bedrooms, na.rm = TRUE),
+      mean_bathrooms = mean(bathrooms, na.rm = TRUE),
+      sd_bathrooms = sd(bathrooms, na.rm = TRUE),
+      mean_square_feet = mean(square_feet, na.rm = TRUE),
+      sd_square_feet = sd(square_feet, na.rm = TRUE),
+      
+      # Min and Max
+      min_price = min(price, na.rm = TRUE),
+      max_price = max(price, na.rm = TRUE),
+      min_bedrooms = min(bedrooms, na.rm = TRUE),
+      max_bedrooms = max(bedrooms, na.rm = TRUE),
+      min_bathrooms = min(bathrooms, na.rm = TRUE),
+      max_bathrooms = max(bathrooms, na.rm = TRUE),
+      min_square_feet = min(square_feet, na.rm = TRUE),
+      max_square_feet = max(square_feet, na.rm = TRUE)
+    )
+  
+  return(cluster_stats)
+}
+
+clusters_2 <- cutree(rc, k=2)
+clusters_3 <- cutree(rc, k=3)
+
+stats_2 <- get_cluster_stats(Rent_P, clusters_2)
+stats_3 <- get_cluster_stats(Rent_P, clusters_3)
+
+stats_2 <- stats_2 %>% mutate(solution = "2 clusters")
+stats_3 <- stats_3 %>% mutate(solution = "3 clusters")
+View(stats_3)
+all_stats <- bind_rows(stats_2, stats_3)
+View(all_stats)
+
+# Creating Cluster Map
+dater_with_clusters <- dater %>%
+  mutate(cluster = as.factor(cutree(rc, k = 3)))
+
+dater_with_clusters <- dater_with_clusters %>%
+  mutate(cluster_color = cluster_colors[as.numeric(cluster)])
+
+apartment_cluster_map <- leaflet(dater_with_clusters) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    color = ~cluster_color,
+    radius = 5,   
+    stroke = FALSE,
+    fillOpacity = 0.7,
+    popup = ~paste("Title:", title, "<br>",
+                   "Amenities:", amenities, "<br>",
+                   "Pets Allowed:", pets_allowed, "<br>",
+                   "Price:", price, "<br>",
+                   "Bedrooms:", bedrooms, "<br>",
+                   "Bathrooms:", bathrooms, "<br>",
+                   "Square Feet:", square_feet, "<br>")
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    colors = cluster_colors,
+    labels = levels(dater_with_clusters$cluster),
+    title = "Apartment Cluster"
+  )
+apartment_cluster_map
+saveWidget(apartment_cluster_map, "apartment_map.html", selfcontained = TRUE)
